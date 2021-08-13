@@ -1,9 +1,9 @@
 .PHONY: help
-help:				## Show this help
+help:			## Show this help
 	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
 
 .PHONY: vendor
-vendor:				## Populate the vendor directory
+vendor:			## Populate the vendor directory
 		go mod vendor
 
 VERSION=$$(git tag -l|sort -t. -k 1,1nr -k 2,2nr -k 3,3nr -k 4,4nr|head -n1)
