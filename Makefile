@@ -6,7 +6,7 @@ help:			## Show this help
 vendor:			## Populate the vendor directory
 		go mod vendor
 
-VERSION=$$(git tag -l|sort -t. -k 1,1nr -k 2,2nr -k 3,3nr -k 4,4nr|head -n1)
+VERSION=$$(git tag -l|sort -t. -k 1,1r -k 2,2nr -k 3,3nr -k 4,4nr|head -n1)
 GIT_COMMIT=$$(git rev-parse --verify HEAD)
 
 .PHONY: build
