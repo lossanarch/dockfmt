@@ -1,33 +1,17 @@
-FROM golang:alpine as builder
-MAINTAINER Jessica Frazelle <jess@linux.com>
+FROM golang:1.14-alpine as gobuilder
 
-ENV PATH /go/bin:/usr/local/go/bin:$PATH
-ENV GOPATH /go
+WORKDIR /code
 
-RUN	apk add --no-cache \
-	bash \
-	ca-certificates
+RUN set -ex && \
+    apk --no-cache add make git
 
-COPY . /go/src/github.com/jessfraz/dockfmt
+COPY . .
 
-RUN set -x \
-	&& apk add --no-cache --virtual .build-deps \
-		git \
-		gcc \
-		libc-dev \
-		libgcc \
-		make \
-	&& cd /go/src/github.com/jessfraz/dockfmt \
-	&& make static \
-	&& mv dockfmt /usr/bin/dockfmt \
-	&& apk del .build-deps \
-	&& rm -rf /go \
-	&& echo "Build complete."
+RUN set -ex && \
+    make install
 
-FROM alpine:latest
+FROM scratch
 
-COPY --from=builder /usr/bin/dockfmt /usr/bin/dockfmt
-COPY --from=builder /etc/ssl/certs/ /etc/ssl/certs
+COPY --from=gobuilder /go/bin/dockfmt /bin/
 
-ENTRYPOINT [ "dockfmt" ]
-CMD [ "--help" ]
+ENTRYPOINT ["dockfmt"]

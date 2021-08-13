@@ -4,13 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -19,95 +16,81 @@ import (
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 )
 
-const formatHelp = `Format the Dockerfile(s).`
+// const formatHelp = `Format the Dockerfile(s).`
 
-func (cmd *formatCommand) Name() string      { return "fmt" }
-func (cmd *formatCommand) Args() string      { return "[OPTIONS] DOCKERFILE [DOCKERFILE...]" }
-func (cmd *formatCommand) ShortHelp() string { return formatHelp }
-func (cmd *formatCommand) LongHelp() string  { return formatHelp }
-func (cmd *formatCommand) Hidden() bool      { return false }
+// func (cmd *formatCommand) Name() string      { return "fmt" }
+// func (cmd *formatCommand) Args() string      { return "[OPTIONS] DOCKERFILE [DOCKERFILE...]" }
+// func (cmd *formatCommand) ShortHelp() string { return formatHelp }
+// func (cmd *formatCommand) LongHelp() string  { return formatHelp }
+// func (cmd *formatCommand) Hidden() bool      { return false }
 
-func (cmd *formatCommand) Register(fs *flag.FlagSet) {
-	fs.BoolVar(&cmd.diff, "diff", false, "display diffs instead of rewriting files")
-	fs.BoolVar(&cmd.diff, "D", false, "display diffs instead of rewriting files")
+// func (cmd *formatCommand) Register(fs *flag.FlagSet) {
+// 	fs.BoolVar(&cmd.diff, "diff", false, "display diffs instead of rewriting files")
+// 	fs.BoolVar(&cmd.diff, "D", false, "display diffs instead of rewriting files")
 
-	fs.BoolVar(&cmd.list, "list", false, "list files whose formatting differs from dockfmt's")
-	fs.BoolVar(&cmd.list, "l", false, "list files whose formatting differs from dockfmt's")
+// 	fs.BoolVar(&cmd.list, "list", false, "list files whose formatting differs from dockfmt's")
+// 	fs.BoolVar(&cmd.list, "l", false, "list files whose formatting differs from dockfmt's")
 
-	fs.BoolVar(&cmd.write, "write", false, "write result to (source) file instead of stdout")
-	fs.BoolVar(&cmd.write, "w", false, "write result to (source) file instead of stdout")
-}
+// 	fs.BoolVar(&cmd.write, "write", false, "write result to (source) file instead of stdout")
+// 	fs.BoolVar(&cmd.write, "w", false, "write result to (source) file instead of stdout")
+// }
 
-type formatCommand struct {
-	diff  bool
-	list  bool
-	write bool
-}
+// type formatCommand struct {
+// 	diff  bool
+// 	list  bool
+// 	write bool
+// }
 
 type file struct {
-	currentLine  int
-	name         string
-	originalFile []byte
+	currentLine       int
+	name              string
+	originalFile      []byte
+	longestLineLength int
 }
 
-func (cmd *formatCommand) Run(ctx context.Context, args []string) error {
+var (
+	// Char/chars to use as tab
+	tabChars = "    "
+	// How far to indent 2nd column, commands longer than this will be single spaced
+	initialTab = 6
+)
+
+// func (cmd *formatCommand) Run(ctx context.Context, args []string) error {
+func Run(ctx context.Context, args []string) error {
+
 	err := forFile(args, func(f string, nodes []*parser.Node) error {
+
 		og, err := ioutil.ReadFile(f)
 		if err != nil {
 			return err
 		}
 
-		df := file{
-			currentLine:  1,
-			name:         f,
-			originalFile: og,
+		df := &file{
+			currentLine:       1,
+			name:              f,
+			originalFile:      og,
+			longestLineLength: 0,
 		}
 
 		var result string
-		for _, n := range nodes {
-			r, err := df.doFmt(n)
-			if err != nil {
-				return err
-			}
-			result += r
+		s, _ := df.getOriginalAsString()
+		r, _ := doFmt(s)
+
+		result += r
+
+		// make a temporary backup before overwriting original
+		bakname, err := backupFile(f+".", og, 0644)
+		if err != nil {
+			return err
 		}
 
-		// display the diff if requested
-		if cmd.diff {
-			d, err := diff(og, []byte(result))
-			if err != nil {
-				return fmt.Errorf("computing diff: %s", err)
-			}
-			fmt.Printf("diff %s dockfmt/%s\n", f, f)
-			os.Stdout.Write(d)
+		if err := ioutil.WriteFile(f, []byte(result), 0644); err != nil {
+			os.Rename(bakname, f)
+			return err
 		}
 
-		if cmd.list {
-			if !bytes.Equal(og, []byte(result)) {
-				fmt.Fprintln(os.Stdout, f)
-			}
-		}
-
-		// write to the file
-		if cmd.write {
-			// make a temporary backup before overwriting original
-			bakname, err := backupFile(f+".", og, 0644)
-			if err != nil {
-				return err
-			}
-
-			if err := ioutil.WriteFile(f, []byte(result), 0644); err != nil {
-				os.Rename(bakname, f)
-				return err
-			}
-
-			if err := os.Remove(bakname); err != nil {
-				return fmt.Errorf("could not remove backup file %s: %v", bakname, err)
-			}
-		}
-
-		if !cmd.diff && !cmd.list && !cmd.write {
-			os.Stdout.Write([]byte(result))
+		if err := os.Remove(bakname); err != nil {
+			return fmt.Errorf("could not remove backup file %s: %v", bakname, err)
 		}
 
 		return nil
@@ -116,64 +99,202 @@ func (cmd *formatCommand) Run(ctx context.Context, args []string) error {
 	return err
 }
 
-func (df *file) doFmt(ast *parser.Node) (result string, err error) {
-	// check if we are on the correct line,
-	// otherwise get the comments we are missing
-	if df.currentLine != ast.StartLine {
-		comments, err := df.getOriginalLines(df.currentLine, ast.StartLine, df.name)
-		if err != nil {
-			return "", err
+func doFmt(s string) (result string, err error) {
+
+	lines := strings.Split(s, "\n")
+
+	nextLookback := 1
+	for i, line := range lines {
+
+		// don't do anything within quotes
+		rQuotes, _ := regexp.Compile(`(?:[^\\]((\\.)*))('(?:\\.|[^\\"'])*'|"(?:\\.|[^\\"'])*")`)
+		m := rQuotes.FindAllString(line, -1)
+
+		var reconstituted string
+		if m != nil {
+			// for everything not quoted in the line go to work on it
+			for i, q := range rQuotes.Split(line, -1) {
+
+				// It's a comment
+				rComments, _ := regexp.Compile(`#(\S)`)
+				if rComments.MatchString(q) {
+
+					q = rComments.ReplaceAllString(q, "# $1")
+
+				}
+
+				// Minimise whitespace, we'll add in desired padding later
+				line = removeWhitespace(line)
+
+				//reconstruct
+				if i < len(m) {
+					reconstituted += q + m[i]
+					continue
+				}
+				reconstituted += q
+			}
+
+			if reconstituted != "" {
+				line = reconstituted
+			}
+
+		} else {
+			// No quoted string
+			// Minimise whitespace, we'll add in desired padding later
+			line = removeWhitespace(line)
 		}
-		result += comments
-	}
 
-	// set the variables for the directive (k) and the value (v)
-	k := ast.Value
-	var v string
-	if ast.Next != nil {
-		v = ast.Next.Value
-	}
+		line = strings.TrimSpace(line)
 
-	// capitalize the directive
-	k = strings.ToUpper(k)
+		// Pad square brackets
+		squareBraces := regexp.MustCompile(`\[(.+)\]`)
+		line = squareBraces.ReplaceAllString(line, "[ $1 ]")
 
-	// format per directive
-	switch k {
-	case "ADD":
-		v = fmtCopy(ast.Next)
-	case "CMD":
-		v, err = fmtCmd(ast.Next)
-		if err != nil {
-			return "", err
+		// Check the previous line to see if it ends with && \
+		// If it does, remove it and add it here at the start
+		if strings.HasPrefix(line, "#") {
+			// Skip processing "&& \" for this line but remember to look back past it next check
+			nextLookback += 1
+		} else {
+
+			aa := regexp.MustCompile(`(?mU)^(.*)&& (\\)$`)
+			if i > nextLookback {
+				if aa.MatchString(lines[i-nextLookback]) {
+
+					lines[i-nextLookback] = aa.ReplaceAllString(lines[i-nextLookback], "$1$2")
+
+					line = "&& " + line
+				}
+				// Now that we've caught up, reset nextLookback
+				nextLookback = 1
+			}
 		}
-	case "COPY":
-		v = fmtCopy(ast.Next)
-	case "ENTRYPOINT":
-		v, err = fmtCmd(ast.Next)
-		if err != nil {
-			return "", err
-		}
-	case "RUN":
-		v = fmtRun(v)
-	case "LABEL":
-		v = fmtLabel(ast.Next)
-	default:
-		v = fmtCopy(ast.Next)
+
+		// Update lines with what we've got before we pass to padLine (we've been working with a copy)
+		lines[i] = line
+
+		// Perform whitespace padding
+		lines[i] = padLine(i, lines)
+
 	}
 
-	// print to the result
-	result = fmt.Sprintf("%s\t%s\n", k, v)
-
-	// set our current line as the start line in the next node
-	// since we want the next node
-	df.currentLine++
-	if ast.Next != nil {
-		df.currentLine = ast.Next.StartLine
-	}
+	result = strings.Join(lines, "\n")
 	return
 }
 
-func (df *file) getOriginalLines(s int, e int, fn string) (string, error) {
+func removeWhitespace(l string) string {
+
+	mws := regexp.MustCompile(`\s\s+`)
+
+	l = mws.ReplaceAllString(l, " ")
+	l = strings.TrimSpace(l)
+
+	return l
+
+}
+
+var currentCmd string
+
+func padLine(index int, lines []string) string {
+
+	line := lines[index]
+	prevLine := ""
+	if index > 0 {
+		prevLine = lines[index-1]
+	}
+
+	// TODO: Maybe indent comments when they are directly below an indented block
+	// Line has a comment without a space directly following it
+	rCmtSpace := regexp.MustCompile(`(#+)([^\r\n\t\f\v #]+)`)
+	if rCmtSpace.MatchString(line) {
+		// Make sure theres a space after however many initial hashes they used
+		line = rCmtSpace.ReplaceAllString(line, "$1 $2")
+
+	}
+
+	f := strings.Fields(line)
+
+	// Starts with a capitalised command
+	// Do this after other transforms due to tabing
+	if regexp.MustCompile(`^[A-Z]+\s+`).MatchString(line) {
+
+		currentCmd = f[0]
+		tab := initialTab
+		if len(f[0]) > initialTab {
+			tab = len(f[0]) + 1
+		}
+		line = fmt.Sprintf("%-*s%s", tab, f[0], strings.Join(f[1:], " "))
+
+	} else {
+
+		if len(f) > 0 {
+			// if a comment
+			if regexp.MustCompile(`\s*# ?`).MatchString(line) {
+				if strings.HasSuffix(prevLine, "\\") {
+
+					line = indent(line, 4)
+
+				}
+			} else {
+				// not a comment
+				// Line up && lines at left indent border
+				if strings.HasPrefix(line, "&& ") {
+					line = indent(line, 0)
+				} else {
+					// Line up non && lines 4 spaces further in
+					switch currentCmd {
+					case "ENV":
+						line = indent(line, 0) // ENV lines should line up at the regular indent
+					default:
+						line = indent(line, 4)
+					}
+
+				}
+			}
+		}
+	}
+
+	if len(f) > 0 {
+
+		if regexp.MustCompile(`^\s+$`).MatchString(line) {
+			line = strings.TrimSpace(line)
+		}
+
+	}
+
+	return line
+}
+
+func indent(s string, level int) string {
+	return fmt.Sprintf("%*s%s", initialTab+level, " ", s)
+}
+
+func (df *file) calculateLongestLineLength() {
+	scanner := bufio.NewScanner(bytes.NewBuffer(df.originalFile))
+	scanner.Split(bufio.ScanLines)
+	var (
+		i = 1
+		t string
+		l int
+		r int
+	)
+	r = df.longestLineLength
+
+	for scanner.Scan() {
+		// scanner parses a little bit so may not be great for getting the raw length of each line...
+		t = scanner.Text()
+		l = len(t)
+		if l > r {
+			r = l
+		}
+		i++
+	}
+
+	df.longestLineLength = r
+
+}
+
+func (df *file) getOriginalAsString() (string, error) {
 	scanner := bufio.NewScanner(bytes.NewBuffer(df.originalFile))
 	scanner.Split(bufio.ScanLines)
 	var (
@@ -181,9 +302,7 @@ func (df *file) getOriginalLines(s int, e int, fn string) (string, error) {
 		l string
 	)
 	for scanner.Scan() {
-		if i >= s && i < e {
-			l += scanner.Text() + "\n"
-		}
+		l += scanner.Text() + "\n"
 		i++
 	}
 
@@ -209,102 +328,12 @@ func getCmd(n *parser.Node, cmd []string) []string {
 	return cmd
 }
 
-func fmtCmd(node *parser.Node) (string, error) {
-	cmd := []string{}
-	cmd = getCmd(node, cmd)
-	b, err := json.Marshal(cmd)
-	if err != nil {
-		return "", err
+func (df *file) padToRight(s string) int {
+	length := df.longestLineLength - len(s) + initialTab + 4
+	if length < 4 {
+		length = 4
 	}
-	return string(b), nil
-}
-
-func fmtCopy(node *parser.Node) string {
-	cmd := []string{}
-	cmd = getCmd(node, cmd)
-	return strings.Join(cmd, "\t")
-}
-
-func fmtLabel(node *parser.Node) string {
-	cmd := []string{}
-	cmd = getCmd(node, cmd)
-	return strings.Join(cmd, "=")
-}
-
-func fmtRun(s string) string {
-	// this regex matches single and double quoted strings & ignores escaped chars
-	/*
-		(?:
-			[^\\]			// must not begin with escape char "\"
-			(\\.)*			// ignore any escaped chars before the first quote
-		)(
-			'(?:\\.|[^\\'])*'	// find string(s) that start & end with single quotes & ignore escaped chars
-			|			// or
-			"(?:\\.|[^\\"])*"	// find string(s) that start & end with double quotes & ignore escaped chars
-		)
-	*/
-	regexQuotes, _ := regexp.Compile(`(?:[^\\]((\\.)*))('(?:\\.|[^\\'])*'|"(?:\\.|[^\\"])*")`)
-	// escape any &'s between quotes
-	// this should be done first before handling the &&'s outside of quotes
-	s = regexQuotes.ReplaceAllStringFunc(s, func(q string) string {
-		// the regex grabs one char before the first quote to ensure the quote isn't escaped
-		// ignore this first char in case it's an '&'
-		escaped := strings.Replace(q[1:], "&", "\\&", -1)
-		return string(q[0]) + escaped
-	})
-
-	s = strings.Replace(s, "apk update && apk add", "apk add --no-cache", -1)
-
-	var r string
-	cmds := strings.Split(s, "&&")
-	cmds = trimAll(cmds)
-	for i, c := range cmds {
-		c = strings.Replace(c, "apk --no-cache add", "apk add", -1)
-
-		// handle `apk add` commands
-		if strings.HasPrefix(c, "apk add") {
-			c = strings.TrimPrefix(c, "apk add")
-			// format --no-cache
-			// we will add it back later
-			c = strings.Replace(c, "--no-cache", "", -1)
-			c = strings.Replace(c, "apk add", "", -1)
-			// recreate the command
-			c = "apk add --no-cache \\" + "\n" + splitLinesWord(c)
-		}
-
-		// handle `apt-get install` commands
-		if strings.HasPrefix(c, "apt-get install") {
-			c = strings.TrimPrefix(c, "apt-get install")
-			// format -y
-			// we will add it back later
-			c = strings.Replace(c, "-y", "", -1)
-			c = strings.Replace(c, "apt-get install", "", -1)
-			// recreate the command
-			c = "apt-get install -y \\" + "\n" + splitLinesWord(c)
-		}
-
-		// return any &'s between quotes back to how they were
-		c = regexQuotes.ReplaceAllStringFunc(c, func(q string) string {
-			escaped := strings.Replace(q, "\\&", "&", -1)
-			return escaped
-		})
-
-		// we aren't on the first line add back the `&&`
-		if i != 0 {
-			c = "\t&& " + c
-		}
-
-		// if we aren't on the last line add a `\\n`
-		if i != len(cmds)-1 {
-			c += " \\\n"
-		}
-		r += c
-	}
-
-	// put `apt-get update && apt-get install` on one-line it's prettier
-	r = strings.Replace(r, "apt-get update \\\n\t&& apt-get install", "apt-get update && apt-get install", -1)
-
-	return r
+	return length
 }
 
 func trimAll(a []string) []string {
@@ -312,49 +341,6 @@ func trimAll(a []string) []string {
 		a[i] = strings.TrimSpace(v)
 	}
 	return a
-}
-
-func splitLinesWord(s string) string {
-	a := strings.Fields(s)
-	a = trimAll(a)
-
-	var r string
-	for i, v := range a {
-		r += "\t" + v
-		// if we aren't on the last line add a `\\n`
-		if i != len(a)-1 {
-			r += " \\\n"
-		}
-	}
-	return r
-}
-
-func diff(b1, b2 []byte) (data []byte, err error) {
-	f1, err := ioutil.TempFile("", "dockfmt")
-	if err != nil {
-		return
-	}
-	defer os.Remove(f1.Name())
-	defer f1.Close()
-
-	f2, err := ioutil.TempFile("", "dockfmt")
-	if err != nil {
-		return
-	}
-	defer os.Remove(f2.Name())
-	defer f2.Close()
-
-	f1.Write(b1)
-	f2.Write(b2)
-
-	data, err = exec.Command("diff", "-u", f1.Name(), f2.Name()).CombinedOutput()
-	if len(data) > 0 {
-		// diff exits with a non-zero status when the files don't match.
-		// Ignore that failure as long as we get output.
-		err = nil
-	}
-
-	return
 }
 
 const chmodSupported = runtime.GOOS != "windows"

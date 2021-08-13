@@ -2,20 +2,22 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/genuinetools/pkg/cli"
-	"github.com/jessfraz/dockfmt/version"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/sirupsen/logrus"
+
+	"github.com/lossanarch/dockfmt/version"
 )
 
 var (
-	debug bool
+	flagDebug   bool
+	flagVersion bool
 )
 
 func main() {
@@ -30,25 +32,35 @@ func main() {
 
 	// Setup the global flags.
 	p.FlagSet = flag.NewFlagSet("global", flag.ExitOnError)
-	p.FlagSet.BoolVar(&debug, "debug", false, "enable debug logging")
-	p.FlagSet.BoolVar(&debug, "d", false, "enable debug logging")
+	p.FlagSet.BoolVar(&flagDebug, "debug", false, "enable debug logging")
+	p.FlagSet.BoolVar(&flagDebug, "d", false, "enable debug logging")
+	p.FlagSet.BoolVar(&flagVersion, "v", false, "print version information")
 
-	p.Commands = []cli.Command{
-		&baseCommand{},
-		&dumpCommand{},
-		&formatCommand{},
-		&maintainerCommand{},
-	}
+	// p.Commands = []cli.Command{
+	// 	// &baseCommand{},
+	// 	// &dumpCommand{},
+	// 	&formatCommand{},
+	// 	// &maintainerCommand{},
+	// }
+
+	// cmd := &formatCommand{}
+
+	p.Action = Run
 
 	// Set the before function.
 	p.Before = func(ctx context.Context) error {
 		// Set the log level.
-		if debug {
+		if flagDebug {
 			logrus.SetLevel(logrus.DebugLevel)
 		}
 
+		if flagVersion {
+			fmt.Fprintf(os.Stderr, "Version: %s\nCommit: %s\n", version.VERSION, version.GITCOMMIT)
+		}
+
 		if p.FlagSet.NArg() < 1 {
-			return errors.New("pass in Dockerfile(s)")
+			// return errors.New("pass in Dockerfile(s)")
+			// just grab Dockerfile in pwd
 		}
 
 		return nil
@@ -123,7 +135,7 @@ func forFile(args []string, fnc func(string, []*parser.Node) error) error {
 			return err
 		}
 		ast := result.AST
-		nodes := []*parser.Node{ast}
+		nodes := []*parser.Node{}
 		if ast.Children != nil {
 			nodes = append(nodes, ast.Children...)
 		}

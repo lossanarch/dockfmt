@@ -1,13 +1,22 @@
-# Setup name variables for the package/tool
-NAME := dockfmt
-PKG := github.com/jessfraz/$(NAME)
+.PHONY: help
+help:				## Show this help
+	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
 
-CGO_ENABLED := 0
+.PHONY: vendor
+vendor:				## Populate the vendor directory
+		go mod vendor
 
-# Set any default go build tags.
-BUILDTAGS :=
+VERSION=$$(git tag -l|sort -t. -k 1,1nr -k 2,2nr -k 3,3nr -k 4,4nr|head -n1)
+GIT_COMMIT=$$(git rev-parse --verify HEAD)
 
-include basic.mk
+.PHONY: build
+build: vendor		## Build the binary
+		@CGO_ENABLED=0 go build -mod=vendor -a -ldflags="-X github.com/lossanarch/dockfmt/version.VERSION=$(VERSION) -X github.com/lossanarch/dockfmt/version.GITCOMMIT=$(GIT_COMMIT)"
 
-.PHONY: prebuild
-prebuild:
+.PHONY: install
+install:		## Install the binary (via go install)
+		@CGO_ENABLED=0 go install -mod=vendor -a -ldflags="-w -s -X github.com/lossanarch/dockfmt/version.VERSION=$(VERSION) -X github.com/lossanarch/dockfmt/version.GITCOMMIT=$(GIT_COMMIT)"
+
+.PHONY: docker
+docker: vendor		## Build the docker image
+		@docker build -t dockfmt:latest .

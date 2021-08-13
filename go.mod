@@ -1,17 +1,17 @@
-module github.com/jessfraz/dockfmt
+module github.com/lossanarch/dockfmt
+
+go 1.14
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/genuinetools/pkg v0.0.0-20180717194616-e057fa50f234
-	github.com/google/go-cmp v0.2.0 // indirect
-	github.com/moby/buildkit v0.0.0-20180717184648-628681f8e4aa
-	github.com/onsi/gomega v1.4.2 // indirect
-	github.com/pkg/errors v0.8.0 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/sirupsen/logrus v1.0.5
-	github.com/stretchr/testify v1.2.2 // indirect
-	golang.org/x/crypto v0.0.0-20180621125126-a49355c7e3f8 // indirect
-	gopkg.in/airbrake/gobrake.v2 v2.0.9 // indirect
-	gopkg.in/gemnasium/logrus-airbrake-hook.v2 v2.1.2 // indirect
-	gotest.tools v2.1.0+incompatible // indirect
+	github.com/moby/buildkit v0.5.2-0.20190531034802-7c2b06fae9d2
+	github.com/sirupsen/logrus v1.3.0
+)
+
+replace (
+	github.com/containerd/containerd v1.3.0-0.20190426060238-3a3f0aac8819 => github.com/containerd/containerd v1.3.0-beta.2.0.20190823190603-4a2f61c4f2b4
+	github.com/docker/docker => github.com/moby/moby v0.7.3-0.20190826074503-38ab9da00309
+	github.com/opencontainers/runc => github.com/opencontainers/runc v1.0.0-rc6.0.20190307181833-2b18fe1d885e
+	golang.org/x/crypto v0.0.0-20190129210102-0709b304e793 => golang.org/x/crypto v0.0.0-20180904163835-0709b304e793
 )
