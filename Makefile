@@ -20,3 +20,10 @@ install:		## Install the binary (via go install)
 .PHONY: docker
 docker: vendor		## Build the docker image
 		@docker build -t dockfmt:latest .
+
+.PHONY: deploy
+deploy: docker
+		docker tag dockfmt:latest lossanarch/dockfmt:$(VERSION)
+		docker tag dockfmt:latest lossanarch/dockfmt:latest
+		docker push lossanarch/dockfmt:$(VERSION)
+		docker push lossanarch/dockfmt:latest
